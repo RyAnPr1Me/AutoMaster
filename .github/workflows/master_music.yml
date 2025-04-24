@@ -47,7 +47,7 @@ jobs:
             filename=$(basename "$track")
             extension="${filename##*.}"
             output="MASTERED/${filename%.*}.mp3"
-            python MASTER.py "$track" "$output"
+            python Master.py "$track" "$output"
           done
 
       # Step 6: Commit new mastered tracks and push them to the repository
