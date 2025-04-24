@@ -1,67 +1,41 @@
-name: Music Mastering Workflow
+name: Auto Mastering Workflow
 
 on:
   push:
     paths:
-      - 'MUSIC/*'
-  workflow_dispatch:  # Enables manual trigger
-
-permissions:
-  contents: write
+      - 'MUSIC/**'
+  workflow_dispatch:
 
 jobs:
-  master_music:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
 
     steps:
-      # Step 1: Checkout the repository
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v2
 
-      # Step 2: Set up Python
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.9
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
 
-      # Step 3: Cache Python dependencies
-      - name: Cache Python dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-python-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-python-
+    - name: Install FFmpeg
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
 
-      # Step 4: Install dependencies from requirements.txt
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-      # Step 5: Run the mastering script on all new/modified tracks
-      - name: Run mastering script
-        run: |
-          mkdir -p MASTERED
-          for track in MUSIC/*; do
-            filename=$(basename "$track")
-            extension="${filename##*.}"
-            output="MASTERED/${filename%.*}.mp3"
-            python Master.py "$track" "$output"
-          done
+    - name: Run AutoMaster script
+      run: |
+        python Master.py
 
-      # Step 6: Commit new mastered tracks and push them to the repository
-      - name: Commit new mastered tracks
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+    - name: Commit mastered track to repo
+      run: |
+        git add MASTERED/*
+        git commit -m "Add mastered track"
+        git push
 
-          # Stage only new or changed files in MASTERED
-          git add -N MASTERED/*  # Update index
-          for file in $(git diff --name-only --diff-filter=A MASTERED/); do
-            git add "$file"
-            original=$(basename "$file")
-            git commit -m "🎧 Auto-mastered track from original: $original"
-          done
-
-          git push || echo "No changes to push"
