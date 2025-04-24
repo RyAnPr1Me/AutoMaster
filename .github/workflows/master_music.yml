@@ -1,0 +1,51 @@
+name: Auto Master Music
+
+on:
+  push:
+    paths:
+      - 'MUSIC/**'
+
+permissions:
+  contents: write
+
+jobs:
+  master_music:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.10
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run mastering script
+        run: |
+          mkdir -p MASTERED
+          for track in MUSIC/*; do
+            filename=$(basename "$track")
+            extension="${filename##*.}"
+            output="MASTERED/${filename%.*}.mp3"
+            python your_mastering_script.py "$track" "$output"
+          done
+
+      - name: Commit new mastered tracks
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stage only new or changed files in MASTERED
+          git add -N MASTERED/*  # Update index
+          for file in $(git diff --name-only --diff-filter=A MASTERED/); do
+            git add "$file"
+            original=$(basename "$file")
+            git commit -m "🎧 Auto-mastered track from original: $original"
+          done
+
+          git push || echo "No changes to push"
