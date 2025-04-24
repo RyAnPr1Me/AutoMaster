@@ -13,18 +13,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout the repository
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # Step 2: Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: 3.10
 
+      # Step 3: Cache Python dependencies
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-python-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-python-
+
+      # Step 4: Install dependencies from requirements.txt
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Step 5: Run the mastering script on all new/modified tracks
       - name: Run mastering script
         run: |
           mkdir -p MASTERED
@@ -35,6 +49,7 @@ jobs:
             python your_mastering_script.py "$track" "$output"
           done
 
+      # Step 6: Commit new mastered tracks and push them to the repository
       - name: Commit new mastered tracks
         run: |
           git config user.name "github-actions[bot]"
