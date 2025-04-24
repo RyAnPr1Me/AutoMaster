@@ -29,9 +29,18 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run AutoMaster script
+    - name: Create MASTERED directory
       run: |
-        python Master.py
+        mkdir -p MASTERED
+
+    - name: Run AutoMaster script on new tracks
+      run: |
+        for file in MUSIC/*; do
+          if [ -f "$file" ]; then
+            output="MASTERED/$(basename "$file")"
+            python Master.py "$file" "$output"
+          fi
+        done
 
     - name: Commit mastered track to repo
       run: |
