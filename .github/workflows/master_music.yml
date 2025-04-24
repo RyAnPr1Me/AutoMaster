@@ -1,9 +1,10 @@
-name: Auto Master Music
+name: Music Mastering Workflow
 
 on:
   push:
     paths:
-      - 'MUSIC/**'
+      - 'MUSIC/*'
+  workflow_dispatch:  # Enables manual trigger
 
 permissions:
   contents: write
