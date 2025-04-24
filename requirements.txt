@@ -1,8 +1,8 @@
 pydub==0.25.1
-numpy==1.23.5  # A version that works with all dependencies
+numpy==1.24.3
 scipy==1.10.1
 python-dotenv==1.0.0
 librosa==0.10.0
 tensorflow==2.12.0
-imageio-ffmpeg==0.4.8
+ffmpeg==5.1.2
 torch
