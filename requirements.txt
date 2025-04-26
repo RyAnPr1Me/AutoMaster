@@ -4,7 +4,7 @@ scipy==1.10.1
 python-dotenv==1.0.0
 librosa==0.10.0
 tensorflow==2.12.0
-torch
-torchaudio
-scikit-learn
-dora
+torch==2.0.1
+torchaudio==2.0.2
+scikit-learn==1.2.2
+dora==0.3.3
