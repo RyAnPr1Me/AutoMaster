@@ -1,11 +1,13 @@
+setuptools>=68.0.0  # Required for building packages
+wheel>=0.40.0  # Required for building wheels
+numpy==1.24.3  # Compatible with Python 3.12
+scipy==1.11.3  # Version with prebuilt wheels for Python 3.12
 pydub==0.25.1
-numpy>=1.19.5
-scipy==1.10.1
 python-dotenv==1.0.0
 librosa==0.10.0
 tensorflow==2.12.0
 torch==2.0.1
 torchaudio==2.0.2
 matplotlib>=3.3.4
-sklearn  # Specific older version compatible with Dora
-dora
+scikit-learn==0.24.2  # Pinned version for Dora/Demucs compatibility
+# Dora will be installed automatically as a dependency of demucs
