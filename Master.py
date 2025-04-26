@@ -26,14 +26,14 @@ logger = logging.getLogger("ProMaster")
 def separate_stems(input_file):
     """Use Demucs from torch.hub directly for 4-stem separation."""
     logger.info("Loading Demucs from torch.hub...")
-    demucs = torch.hub.load("facebookresearch/demucs", "hdemucs_mmi", source="github")
-    demucs.to(DEVICE).eval()
+    try:
+        demucs = torch.hub.load("facebookresearch/demucs", "hdemucs_mmi", source="github")
+        demucs.to(DEVICE).eval()
+    except Exception as e:
+        logger.error(f"Failed to load Demucs: {e}")
+        raise
 
     logger.info(f"Converting and loading audio: {input_file}")
-    audio = AudioSegment.from_file(input_file)
-    temp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    audio.export(temp_wav.name, format="wav")
-
     wav, sr = torchaudio.load(temp_wav.name)
     os.unlink(temp_wav.name)
 

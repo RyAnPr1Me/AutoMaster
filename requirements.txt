@@ -6,6 +6,6 @@ librosa==0.10.0
 tensorflow==2.12.0
 torch==2.0.1
 torchaudio==2.0.2
-scikit-learn==1.2.2
 matplotlib>=3.3.4
-librosa
+scikit-learn<1.2  # Required for Dora/Demucs compatibility
+Dora
