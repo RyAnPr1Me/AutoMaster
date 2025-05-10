@@ -3,7 +3,6 @@ import argparse
 import logging
 import tempfile
 from pathlib import Path
-
 import torch
 import torchaudio
 import numpy as np
@@ -39,6 +38,83 @@ def separate_stems(input_file):
         torchaudio.save(path, estimates[i].cpu(), sr)
         stems[src] = AudioSegment.from_wav(path)
     return stems
+
+# ============ EQ FUNCTIONS ============
+
+class ParametricEQBand:
+    def __init__(self, center_freq, bandwidth, gain):
+        self.center_freq = center_freq
+        self.bandwidth = bandwidth
+        self.gain = gain
+        self.b, self.a = self._create_bandpass_filter()
+
+    def _create_bandpass_filter(self):
+        low = self.center_freq - self.bandwidth / 2
+        high = self.center_freq + self.bandwidth / 2
+        nyquist = 44100 / 2
+        low = low / nyquist
+        high = high / nyquist
+        b, a = scipy.signal.butter(2, [low, high], btype='band')
+        return b, a
+
+    def process(self, audio_samples):
+        filtered = scipy.signal.lfilter(self.b, self.a, audio_samples)
+        filtered *= 10 ** (self.gain / 20)
+        return filtered
+
+def advanced_eq(audio):
+    logger.info("Applying advanced parametric EQ...")
+
+    samples = np.array(audio.get_array_of_samples()).astype(np.float32)
+    sr = audio.frame_rate
+
+    eq_bands = [
+        ParametricEQBand(center_freq=60, bandwidth=120, gain=3),
+        ParametricEQBand(center_freq=1000, bandwidth=400, gain=1),
+        ParametricEQBand(center_freq=5000, bandwidth=1000, gain=-2),
+        ParametricEQBand(center_freq=10000, bandwidth=2000, gain=4),
+    ]
+    
+    processed_samples = np.zeros_like(samples)
+    for band in eq_bands:
+        processed_samples += band.process(samples)
+
+    processed_samples = np.clip(processed_samples, -32768, 32767).astype(np.int16)
+    return audio._spawn(processed_samples.tobytes())
+
+# ============ DYNAMIC EQ FUNCTION ============
+
+def dynamic_eq(audio, threshold=0.1, ratio=2.0):
+    logger.info("Applying dynamic EQ...")
+
+    samples = np.array(audio.get_array_of_samples()).astype(np.float32)
+    sr = audio.frame_rate
+    fft = np.fft.rfft(samples)
+    magnitude = np.abs(fft)
+    
+    # Calculate energy of frequency bands
+    bands = [
+        (20, 250),   # Sub-bass and bass
+        (250, 2000), # Midrange
+        (2000, 5000),# Upper midrange
+        (5000, 12000),# Treble
+    ]
+    
+    dynamic_samples = np.zeros_like(samples)
+    for low, high in bands:
+        band_idx = np.where((np.fft.fftfreq(len(magnitude), 1/sr) > low) & (np.fft.fftfreq(len(magnitude), 1/sr) < high))[0]
+        band_magnitude = magnitude[band_idx]
+        band_energy = np.sum(band_magnitude) / len(band_magnitude)
+        
+        if band_energy > threshold:  # Apply compression if energy is above threshold
+            gain_factor = band_energy / threshold * ratio
+            band_samples = np.fft.irfft(fft[band_idx] * gain_factor)
+            dynamic_samples += np.real(band_samples)
+    
+    dynamic_samples = np.clip(dynamic_samples, -32768, 32767).astype(np.int16)
+    return audio._spawn(dynamic_samples.tobytes())
+
+# ============ MASTERING CHAIN ============
 
 def multiband_compress(audio):
     logger.info("Multiband compression applied.")
@@ -78,21 +154,6 @@ def normalize_lufs(audio, target=-14.0):
     db = 20 * np.log10(rms) if rms > 0 else -float("inf")
     return audio.apply_gain(target - db)
 
-def spectral_eq(audio):
-    logger.info("Applying adaptive EQ...")
-    samples = np.array(audio.get_array_of_samples()).astype(np.float32)
-    fft = np.fft.rfft(samples)
-    magnitude = np.abs(fft)
-    sr = audio.frame_rate
-    if np.mean(magnitude[:100]) > np.mean(magnitude[500:1000]):
-        logger.info("Low-end boost detected. Applying low cut.")
-        samples = scipy.signal.lfilter(*scipy.signal.butter(2, 150/sr*2, btype="high"), samples)
-    if np.mean(magnitude[3000:8000]) < 0.1 * np.max(magnitude):
-        logger.info("High-end weak. Applying high boost.")
-        samples = scipy.signal.lfilter(*scipy.signal.butter(2, 5000/sr*2, btype="high"), samples)
-    samples = np.clip(samples, -32768, 32767).astype(np.int16)
-    return audio._spawn(samples.tobytes())
-
 def soft_limiter(audio):
     logger.info("Applying soft limiter...")
     samples = np.array(audio.get_array_of_samples()).astype(np.float32)
@@ -108,7 +169,8 @@ def apply_mastering_chain(audio):
         multiband_compress,
         transient_shaper,
         stereo_imager,
-        spectral_eq,
+        advanced_eq,  # Replaced spectral_eq with advanced EQ
+        dynamic_eq,   # Added dynamic EQ
         normalize_lufs,
         soft_limiter,
     ]
@@ -136,4 +198,3 @@ if __name__ == "__main__":
     p.add_argument("--dry", action="store_true", help="Dry run without exporting")
     args = p.parse_args()
     process(args.input, args.output, dry_run=args.dry)
-
