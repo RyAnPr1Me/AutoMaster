@@ -62,18 +62,39 @@ class ParametricEQBand:
         filtered *= 10 ** (self.gain / 20)
         return filtered
 
-def advanced_eq(audio):
-    logger.info("Applying advanced parametric EQ...")
-
+def energy_based_eq(audio):
+    logger.info("Applying energy-based EQ...")
+    
+    # Analyze energy across different frequency bands
     samples = np.array(audio.get_array_of_samples()).astype(np.float32)
     sr = audio.frame_rate
-
-    eq_bands = [
-        ParametricEQBand(center_freq=60, bandwidth=120, gain=3),
-        ParametricEQBand(center_freq=1000, bandwidth=400, gain=1),
-        ParametricEQBand(center_freq=5000, bandwidth=1000, gain=-2),
-        ParametricEQBand(center_freq=10000, bandwidth=2000, gain=4),
-    ]
+    
+    # Analyze frequency content with FFT
+    fft = np.fft.rfft(samples)
+    magnitude = np.abs(fft)
+    
+    bands = {
+        'low': (20, 250),   # Sub-bass and bass
+        'mid': (250, 2000), # Midrange
+        'high': (2000, 12000) # Treble
+    }
+    
+    energy_profile = {}
+    
+    for band, (low, high) in bands.items():
+        band_idx = np.where((np.fft.fftfreq(len(magnitude), 1/sr) > low) & (np.fft.fftfreq(len(magnitude), 1/sr) < high))[0]
+        band_magnitude = magnitude[band_idx]
+        band_energy = np.sum(band_magnitude) / len(band_magnitude)
+        energy_profile[band] = band_energy
+    
+    # Adjust EQ based on energy profile
+    eq_bands = []
+    if energy_profile['low'] < 0.5:  # Boost low end if it's too weak
+        eq_bands.append(ParametricEQBand(center_freq=60, bandwidth=120, gain=4))
+    if energy_profile['mid'] < 0.5:  # Boost mids for clarity
+        eq_bands.append(ParametricEQBand(center_freq=1000, bandwidth=400, gain=2))
+    if energy_profile['high'] < 0.5:  # Boost highs for brightness
+        eq_bands.append(ParametricEQBand(center_freq=5000, bandwidth=1000, gain=3))
     
     processed_samples = np.zeros_like(samples)
     for band in eq_bands:
@@ -81,38 +102,6 @@ def advanced_eq(audio):
 
     processed_samples = np.clip(processed_samples, -32768, 32767).astype(np.int16)
     return audio._spawn(processed_samples.tobytes())
-
-# ============ DYNAMIC EQ FUNCTION ============
-
-def dynamic_eq(audio, threshold=0.1, ratio=2.0):
-    logger.info("Applying dynamic EQ...")
-
-    samples = np.array(audio.get_array_of_samples()).astype(np.float32)
-    sr = audio.frame_rate
-    fft = np.fft.rfft(samples)
-    magnitude = np.abs(fft)
-    
-    # Calculate energy of frequency bands
-    bands = [
-        (20, 250),   # Sub-bass and bass
-        (250, 2000), # Midrange
-        (2000, 5000),# Upper midrange
-        (5000, 12000),# Treble
-    ]
-    
-    dynamic_samples = np.zeros_like(samples)
-    for low, high in bands:
-        band_idx = np.where((np.fft.fftfreq(len(magnitude), 1/sr) > low) & (np.fft.fftfreq(len(magnitude), 1/sr) < high))[0]
-        band_magnitude = magnitude[band_idx]
-        band_energy = np.sum(band_magnitude) / len(band_magnitude)
-        
-        if band_energy > threshold:  # Apply compression if energy is above threshold
-            gain_factor = band_energy / threshold * ratio
-            band_samples = np.fft.irfft(fft[band_idx] * gain_factor)
-            dynamic_samples += np.real(band_samples)
-    
-    dynamic_samples = np.clip(dynamic_samples, -32768, 32767).astype(np.int16)
-    return audio._spawn(dynamic_samples.tobytes())
 
 # ============ MASTERING CHAIN ============
 
@@ -125,7 +114,7 @@ def multiband_compress(audio):
     for low, high in bands:
         b, a = scipy.signal.butter(2, [low/sr*2, high/sr*2], btype="band")
         band = scipy.signal.lfilter(b, a, samples)
-        gain = 0.8 / (np.std(band) + 1e-9)
+        gain = 0.8 / (np.std(band) + 1e-9)  # Dynamic compression
         out += band * gain
     out = np.clip(out, -32768, 32767).astype(np.int16)
     return audio._spawn(out.tobytes())
@@ -169,8 +158,7 @@ def apply_mastering_chain(audio):
         multiband_compress,
         transient_shaper,
         stereo_imager,
-        advanced_eq,  # Replaced spectral_eq with advanced EQ
-        dynamic_eq,   # Added dynamic EQ
+        energy_based_eq,  # Replaced advanced EQ with energy-based EQ
         normalize_lufs,
         soft_limiter,
     ]
