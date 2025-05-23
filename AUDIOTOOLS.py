@@ -1,20 +1,19 @@
 # === IMPORTS ===
-import sys
 import os
-import subprocess
-import numpy as np
-import librosa
-import soundfile as sf
-from scipy.ndimage import median_filter
-import torch
-import torchaudio
-import logging
-from pathlib import Path
-from pydub import AudioSegment, effects
-from mido import MidiFile, Message, MidiTrack, MetaMessage
 import random
-import scipy.signal
-import mido  # <-- Add this import for bpm2tempo
+import subprocess
+import shutil # For shutil.copy and shutil.which
+import librosa
+import numpy as np # Ensure numpy is imported
+import soundfile as sf
+from pydub import AudioSegment, effects
+from pydub.silence import split_on_silence
+import mido # Keep mido import
+from mido import MidiFile, Message, MidiTrack, MetaMessage, bpm2tempo # Explicitly import bpm2tempo
+import scipy.signal # Ensure scipy.signal is imported
+from scipy.ndimage import median_filter
+from pathlib import Path
+import argparse
 
 # NOTE: Requires pydub, torchaudio, librosa, soundfile, mido, scipy, numpy
 # Install with: pip install pydub torchaudio librosa soundfile mido scipy numpy
@@ -107,28 +106,26 @@ def remove_background_noise(audio, sr, strength=0.5):
     cleaned_audio = librosa.istft(cleaned_stft)
     return cleaned_audio
 
-def remove_vocal_noise_deepfilternet(input_path, output_path):
-    """
-    Denoise vocals using DeepFilterNet (deepfilternet Python package).
-    """
+def remove_vocal_noise_deepfilternet(input_path, output_path, model_name="DeepFilterNet3"):
     try:
         import deepfilternet as dfn
+        # Initialize DeepFilterNet model
+        # Adjust attenuation and other parameters as needed
+        model = dfn.DeepFilterNet.from_pretrained(model_name)
+        # Load audio
+        noisy_audio, sr = librosa.load(input_path, sr=model.sr)
+        # Enhance audio
+        enhanced_audio = model.enhance(noisy_audio)
+        # Save enhanced audio
+        sf.write(output_path, enhanced_audio, sr)
+        print(f"Vocal noise removed using DeepFilterNet. Output: {output_path}")
+        return True
     except ImportError:
-        print("[ERROR] The 'deepfilternet' package is required for DeepFilterNet denoising. Install it with: pip install deepfilternet")
-        return
-    try:
-        audio, sr = sf.read(input_path)
-        if audio.ndim > 1:
-            audio = np.mean(audio, axis=1)  # Convert to mono
-        # DeepFilterNet expects float32
-        audio = audio.astype(np.float32)
-        # Run DeepFilterNet
-        model = dfn.DeepFilterNet()
-        denoised = model.process(audio, sr)
-        sf.write(output_path, denoised, sr)
-        print(f"[DeepFilterNet] Processed and saved: {output_path}")
+        print("Error: deepfilternet library is not installed. Please install it to use this feature (e.g., pip install deepfilternet).")
+        return False
     except Exception as e:
-        print(f"[ERROR] DeepFilterNet denoising failed: {e}")
+        print(f"Error during DeepFilterNet processing: {e}")
+        return False
 
 def trim_silence(audio, sr, top_db=30):
     """
@@ -263,87 +260,183 @@ def embed_watermark_in_music(tracks, pattern=[60, 62, 64, 65, 67], channels=[1,2
         tick = bar_start + random.randint(0, BAR_LENGTH//2)
         add_note(tracks[channel], note, velocity, tick, duration, channel)
 
-def energy_based_eq(audio):
-    samples = np.array(audio.get_array_of_samples()).astype(np.float32)
-    sr = audio.frame_rate
-    fft = np.fft.rfft(samples)
-    magnitude = np.abs(fft)
-    bands = {'low': (20, 250), 'mid': (250, 2000), 'high': (2000, 12000)}
-    energy_profile = {}
-    for band, (low, high) in bands.items():
-        band_idx = np.where((np.fft.fftfreq(len(magnitude), 1/sr) > low) & (np.fft.fftfreq(len(magnitude), 1/sr) < high))[0]
-        band_magnitude = magnitude[band_idx]
-        band_energy = np.sum(band_magnitude) / len(band_magnitude) if len(band_magnitude) > 0 else 0
-        energy_profile[band] = band_energy
-    eq_bands = []
-    if energy_profile.get('low', 1) < 0.5:
-        eq_bands.append(ParametricEQBand(center_freq=60, bandwidth=120, gain=4))
-    if energy_profile.get('mid', 1) < 0.5:
-        eq_bands.append(ParametricEQBand(center_freq=1000, bandwidth=400, gain=2))
-    if energy_profile.get('high', 1) < 0.5:
-        eq_bands.append(ParametricEQBand(center_freq=5000, bandwidth=1000, gain=3))
-    processed_samples = np.zeros_like(samples)
-    for band in eq_bands:
-        processed_samples += band.process(samples)
-    if len(eq_bands) > 0:
-        processed_samples = np.clip(processed_samples, -32768, 32767).astype(np.int16)
-        return audio._spawn(processed_samples.tobytes())
+def energy_based_eq(audio): # audio is Pydub AudioSegment
+    samples_original = np.array(audio.get_array_of_samples()).astype(np.float32)
+    if audio.channels > 1:
+        samples_mono_for_analysis = np.mean(samples_original.reshape(-1, audio.channels), axis=1)
     else:
-        return audio
+        samples_mono_for_analysis = samples_original.copy()
 
-def multiband_compress(audio):
-    bands = [(20, 250), (250, 2000), (2000, 16000)]
-    samples = np.array(audio.get_array_of_samples()).astype(np.float32)
     sr = audio.frame_rate
-    out = np.zeros_like(samples)
-    for low, high in bands:
-        b, a = scipy.signal.butter(2, [low/sr*2, high/sr*2], btype="band")
-        band = scipy.signal.lfilter(b, a, samples)
-        gain = 0.8 / (np.std(band) + 1e-9)
-        out += band * gain
-    out = np.clip(out, -32768, 32767).astype(np.int16)
-    return audio._spawn(out.tobytes())
+    
+    fft_spectrum = np.fft.rfft(samples_mono_for_analysis)
+    fft_freq = np.fft.rfftfreq(len(samples_mono_for_analysis), 1.0/sr)
+    magnitude = np.abs(fft_spectrum)
+    
+    bands = {'low': (20, 250), 'mid': (250, 2000), 'high': (2000, min(12000, sr/2.0 -1.0))} 
+    energy_profile = {}
 
-def transient_shaper(audio):
-    samples = np.array(audio.get_array_of_samples()).astype(np.float32)
-    envelope = np.abs(samples)
-    threshold = np.percentile(envelope, 90)
-    transients = (envelope > threshold).astype(float)
-    shaped = samples * (1 + transients * 0.5)
-    shaped = np.clip(shaped, -32768, 32767).astype(np.int16)
-    return audio._spawn(shaped.tobytes())
+    for band_name, (low_freq, high_freq) in bands.items():
+        idx = np.where((fft_freq >= low_freq) & (fft_freq < high_freq))[0]
+        if len(idx) > 0:
+            band_energy = np.mean(magnitude[idx]) 
+        else:
+            band_energy = 0
+        energy_profile[band_name] = band_energy
 
-def stereo_imager(audio):
-    if audio.channels == 1:
-        return audio.set_channels(2)
-    left, right = audio.split_to_mono()
-    widened = AudioSegment.from_mono_audiosegments(left - 1, right + 1)
-    return widened
+    total_energy = np.sum(list(energy_profile.values()))
+    if total_energy > 1e-9: # Avoid division by zero if silent
+        for band_name in energy_profile:
+            energy_profile[band_name] /= total_energy
+    else: # If silent, no EQ adjustments needed based on energy
+        return audio
+    
+    eq_bands_params = []
+    # More sensitive thresholds for relative energy
+    if energy_profile.get('low', 0) < 0.20: 
+        eq_bands_params.append({'center_freq': 80, 'bandwidth': 120, 'gain': 2.5, 'sample_rate': sr})
+    elif energy_profile.get('low', 0) > 0.45: # If low is too dominant
+        eq_bands_params.append({'center_freq': 100, 'bandwidth': 150, 'gain': -1.5, 'sample_rate': sr})
+        
+    if energy_profile.get('mid', 0) < 0.30: 
+        eq_bands_params.append({'center_freq': 1000, 'bandwidth': 1500, 'gain': 1.0, 'sample_rate': sr})
+    elif energy_profile.get('mid', 0) > 0.55:
+        eq_bands_params.append({'center_freq': 800, 'bandwidth': 1000, 'gain': -1.0, 'sample_rate': sr})
+        
+    if energy_profile.get('high', 0) < 0.15:
+        eq_bands_params.append({'center_freq': 7000, 'bandwidth': 5000, 'gain': 2.0, 'sample_rate': sr})
+    elif energy_profile.get('high', 0) > 0.40:
+        eq_bands_params.append({'center_freq': 5000, 'bandwidth': 4000, 'gain': -1.5, 'sample_rate': sr})
 
-def normalize_lufs(audio, target=-14.0):
-    rms = audio.rms
-    db = 20 * np.log10(rms) if rms > 0 else -float("inf")
-    return audio.apply_gain(target - db)
+    if not eq_bands_params:
+        return audio 
 
-def soft_limiter(audio):
-    samples = np.array(audio.get_array_of_samples()).astype(np.float32)
-    max_val = np.max(np.abs(samples))
-    if max_val > 30000:
-        samples = samples * (30000.0 / max_val)
-    samples = np.clip(samples, -32768, 32767).astype(np.int16)
-    return audio._spawn(samples.tobytes())
+    active_eq_bands = [ParametricEQBand(**params) for params in eq_bands_params]
+    
+    # The sum of (filtered and gained) bands will be the EQ effect.
+    # This effect is then added to the original signal.
+    # This is more akin to how parallel EQs or some graphic EQs work when bands are summed.
+    sum_of_processed_bands = np.zeros_like(samples_original, dtype=np.float32)
+    for band_filter in active_eq_bands:
+        # band_filter.process now returns the isolated, gained band effect (or zeros if filter failed)
+        sum_of_processed_bands += band_filter.process(samples_original.copy()) 
 
-def apply_mastering_chain(audio):
-    chain = [
-        multiband_compress,
-        transient_shaper,
-        stereo_imager,
-        energy_based_eq,
-        normalize_lufs,
-        soft_limiter,
-    ]
-    for stage in chain:
-        audio = stage(audio)
+    # The result is the original signal plus the sum of adjustments from each band.
+    # However, the previous logic was: final_samples = processed_samples_effect
+    # This implies the sum of bands *is* the new signal, not an addition to original.
+    # Let's stick to that model: the output is the sum of the processed bands.
+    final_samples = sum_of_processed_bands
+
+    final_samples_clipped = np.clip(final_samples, -32768, 32767).astype(np.int16)
+    return audio._spawn(final_samples_clipped.tobytes())
+
+# === PARAMETRIC EQ BAND CLASS ===
+class ParametricEQBand:
+    def __init__(self, center_freq, bandwidth, gain, sample_rate):
+        self.center_freq = float(center_freq)
+        self.bandwidth = float(bandwidth)
+        self.gain_db = float(gain)
+        self.sample_rate = float(sample_rate)
+        self.b, self.a = self._create_band_filter()
+
+    def _create_band_filter(self):
+        nyquist = self.sample_rate / 2.0
+        
+        low_cutoff = self.center_freq - self.bandwidth / 2.0
+        high_cutoff = self.center_freq + self.bandwidth / 2.0
+
+        low_cutoff = max(1.0, low_cutoff) 
+        high_cutoff = min(nyquist - 1.0, high_cutoff)
+
+        if low_cutoff >= high_cutoff:
+            # print(f"Warning: Invalid band parameters for ParametricEQBand (f={self.center_freq}, bw={self.bandwidth}). Low cutoff >= high cutoff.")
+            return np.array([1.0]), np.array([1.0]) # Return pass-through filter
+
+        wn_low = low_cutoff / nyquist
+        wn_high = high_cutoff / nyquist
+        
+        wn_low = max(1e-6, min(wn_low, 1.0 - 1e-6)) # Clamp to (0, 1) exclusive
+        wn_high = max(1e-6, min(wn_high, 1.0 - 1e-6))
+
+        if wn_low >= wn_high:
+            # print(f"Warning: Invalid normalized cutoffs for ParametricEQBand (f={self.center_freq}, bw={self.bandwidth}). wn_low >= wn_high.")
+            return np.array([1.0]), np.array([1.0]) # Pass-through
+
+        try:
+            # For a band-specific gain effect as used in energy_based_eq (summing bands)
+            # we use a bandpass filter.
+            b, a = scipy.signal.butter(2, [wn_low, wn_high], btype='bandpass')
+        except ValueError as e:
+            # print(f"Warning: Could not create Butterworth filter for f={self.center_freq}, bw={self.bandwidth}. {e}")
+            return np.array([1.0]), np.array([1.0]) # Pass-through
+        return b, a
+
+    def process(self, audio_samples): # audio_samples is a numpy array
+        if np.array_equal(self.b, [1.0]) and np.array_equal(self.a, [1.0]): # Pass-through filter due to error or invalid params
+             return np.zeros_like(audio_samples) # This band contributes nothing to the sum of filtered bands
+
+        filtered_samples = scipy.signal.lfilter(self.b, self.a, audio_samples)
+        gain_linear = 10 ** (self.gain_db / 20.0)
+        processed_samples = filtered_samples * gain_linear
+        return processed_samples
+
+# Replace the old multiband_compress with this new one
+def _apply_pydub_compression(segment, params):
+    """Helper to apply compression and optional makeup gain to a Pydub AudioSegment."""
+    if not segment or len(segment) == 0:
+        return segment 
+    
+    comp_config = {
+        'threshold': params.get('threshold', -20.0),
+        'ratio': params.get('ratio', 4.0),
+        'attack': params.get('attack', 5.0), 
+        'release': params.get('release', 50.0) 
+    }
+    try:
+        compressed_segment = segment.compress_dynamic_range(**comp_config)
+        current_loudness = audio.dBFS # This is peak, not LUFS. Pydub doesn't have direct LUFS.
+        # For actual LUFS, pyloudnorm is used in normalize_loudness.
+        # The normalize_loudness function handles this.
+        audio_normalized = normalize_loudness(audio.copy(), target_lufs)
+        if audio_normalized is not None:
+            audio = audio_normalized
+        else:
+            print("Warning: LUFS normalization returned None. Skipping normalization.")
+            # Fallback or error handling if normalize_loudness fails
+    except Exception as e:
+        print(f"Error during LUFS Normalization: {e}. Skipping normalization.")
+
+
+    # 6. Soft Limiting / True Peak Limiting
+    print(f"Step 6: Applying Limiting to meet True Peak {true_peak} dBFS...")
+    try:
+        # Pydub's normalize can act as a simple peak limiter.
+        # For more precise true peak limiting, dedicated tools are better.
+        # This is a basic approach.
+        
+        # First, ensure we are not clipping excessively before trying to meet true peak.
+        # If audio is already heavily compressed/limited, further gain reduction might be needed.
+        # This is a simplified limiter. A real true peak limiter is more complex.
+        
+        # Calculate current peak
+        current_peak_dbfs = audio.max_dBFS
+        
+        # Calculate gain adjustment needed to hit the true_peak target
+        gain_to_meet_true_peak = true_peak - current_peak_dbfs
+        
+        if gain_to_meet_true_peak < 0: # Only apply if current peak exceeds target
+            audio = audio.apply_gain(gain_to_meet_true_peak)
+            print(f"Applied {gain_to_meet_true_peak:.2f} dB gain to meet true peak (current max: {audio.max_dBFS:.2f} dBFS).")
+        else:
+            print(f"Audio peak ({current_peak_dbfs:.2f} dBFS) is already at or below target true peak ({true_peak} dBFS). No peak limiting applied.")
+
+    except Exception as e:
+        print(f"Error during Peak Limiting: {e}. Skipping limiting.")
+
+    # 7. Dithering (Conceptual - Pydub handles this during export for lower bit depths if needed)
+    print("Step 7: Dithering (Handled by Pydub on export to relevant formats if necessary).")
+
+    print("Classic mastering chain processing completed.")
     return audio
 
 def generate_full_trap_beat(
@@ -514,7 +607,7 @@ def generate_full_trap_beat(
         print(f"[ERROR] Could not save MIDI: {e}")
 
 # === STEM SPLIT ===
-def stem_split(input_file, output_dir, stems=2):
+def stem_split(input_file, output_dir, num_stems=2):
     """
     Split audio into stems using Demucs.
     stems: 2 (vocals/accompaniment), 4 (vocals, drums, bass, other), or 6 (htdemucs: vocals, drums, bass, guitar, piano, other)
@@ -557,37 +650,58 @@ def stem_split(input_file, output_dir, stems=2):
         print(f"[ERROR] Demucs stem splitting failed: {e}")
 
 # === MASTERING (CLASSIC & AI) ===
-def ai_master_audio(input_file, output_file, target_lufs=-14.0, output_format="wav", dither=True):
+def ai_master_audio(input_path, output_path, target_lufs, true_peak):
     """
-    Placeholder for AI mastering. Replace with real API/model as needed.
-    Attempts to master audio using an AI model or cloud service.
-    Returns True if successful, False otherwise.
+    Placeholder for AI mastering logic.
+    This function should ideally call an AI mastering service or local model.
     """
+    print("AI mastering function called. This is a placeholder.")
+    # Simulate AI processing by copying the input to output
+    # In a real scenario, this would involve complex AI-driven audio processing
     try:
-        # Example: call a local AI model or cloud API here
-        # For now, just print and return False to fallback to classic
-        print("[INFO] AI mastering is not implemented. Falling back to classic mastering.")
+        # Example: Using a hypothetical AI mastering library or API call
+        # from ai_mastering_library import AIMasteringService
+        # service = AIMasteringService(api_key="YOUR_API_KEY")
+        # result = service.master_track(input_path, target_lufs=target_lufs, true_peak=true_peak)
+        # result.save(output_path)
+        
+        # For now, let's just copy the file to simulate a process
+        import shutil
+        shutil.copy(input_path, output_path)
+        print(f"Placeholder AI mastering: copied {input_path} to {output_path}")
+        # Simulate success/failure
+        # return True 
+        # To demonstrate fallback, let's return False
+        print("AI mastering placeholder returning False to trigger fallback.")
+        return False # Simulate failure to test fallback
+
+    except ImportError:
+        print("AI mastering library not found. Please install the required library.")
         return False
     except Exception as e:
-        print(f"[ERROR] AI mastering failed: {e}")
+        print(f"Error in AI mastering placeholder: {e}")
         return False
 
-def master_audio(input_file, output_file, target_lufs=-14.0, output_format="wav", dither=True, ai_mastering=False):
+def master_audio(input_path, output_path, ai_mastering=False, target_lufs=-14.0, true_peak=-1.0, output_format='wav'):
     """
     Master an audio file with advanced chain, LUFS normalization, dithering, and optional AI mastering.
     """
     try:
         if ai_mastering:
-            print("[INFO] Attempting AI mastering...")
-            ai_success = ai_master_audio(input_file, output_file, target_lufs=target_lufs, output_format=output_format, dither=dither)
-            if ai_success:
-                print(f"[INFO] AI mastering complete: {output_file}")
-                return
+            print("Attempting AI mastering...")
+            success = ai_master_audio(input_path, output_path, target_lufs, true_peak)
+            if success:
+                print("AI mastering successful.")
+                # Further processing or direct use of AI output
+                audio = AudioSegment.from_file(output_path)
             else:
-                print("[WARN] AI mastering failed or not available. Using classic mastering chain.")
+                print("AI mastering failed or is not fully implemented. Falling back to classic mastering.")
+                audio = classic_mastering_chain(audio, target_lufs, true_peak)
+        else:
+            audio = classic_mastering_chain(audio, target_lufs, true_peak)
         # Classic mastering chain
-        audio = AudioSegment.from_file(input_file)
-        print(f"Loaded {input_file} (channels={audio.channels}, duration={audio.duration_seconds:.2f}s)")
+        audio = AudioSegment.from_file(input_path)
+        print(f"Loaded {input_path} (channels={audio.channels}, duration={audio.duration_seconds:.2f}s)")
         before_rms = audio.rms
         print(f"Input RMS: {before_rms}")
         mastered = apply_mastering_chain(audio)
@@ -600,12 +714,51 @@ def master_audio(input_file, output_file, target_lufs=-14.0, output_format="wav"
             samples = np.clip(samples, -32768, 32767).astype(np.int16)
             mastered = mastered._spawn(samples.tobytes())
         mastered = mastered.set_frame_rate(audio.frame_rate).set_channels(audio.channels)
-        mastered.export(output_file, format=output_format)
+        mastered.export(output_path, format=output_format)
         after_rms = mastered.rms
-        print(f"Exported mastered file: {output_file}")
+        print(f"Exported mastered file: {output_path}")
         print(f"Output RMS: {after_rms}")
     except Exception as e:
         print(f"[ERROR] Mastering failed: {e}")
+
+# === PARAMETRIC EQ BAND CLASS ===
+class ParametricEQBand:
+    def __init__(self, center_freq, bandwidth, gain):
+        self.center_freq = center_freq
+        self.bandwidth = bandwidth
+        self.gain = gain
+        # Assuming a default sample rate of 44100 for filter design.
+        # This might need to be dynamic if handling audio with different sample rates.
+        self.sample_rate = 44100 
+        self.b, self.a = self._create_band_filter()
+
+    def _create_band_filter(self):
+        nyquist = self.sample_rate / 2
+        low = (self.center_freq - self.bandwidth / 2) / nyquist
+        high = (self.center_freq + self.bandwidth / 2) / nyquist
+        
+        # Ensure low and high are within valid range (0, 1)
+        low = max(0.01, min(low, 0.99)) # Clamp to avoid issues at nyquist or 0
+        high = max(0.01, min(high, 0.99))
+
+        if low >= high: # Avoid issues if bandwidth is too large or center_freq is near extremes
+            # Fallback to a simple gain adjustment or skip filtering for this band
+            # For simplicity, returning a pass-through filter
+            return [1], [1]
+            
+        # Using a 2nd order Butterworth filter
+        b, a = scipy.signal.butter(2, [low, high], btype='bandpass')
+        return b, a
+
+    def process(self, audio_samples):
+        if np.array_equal(self.b, [1]) and np.array_equal(self.a, [1]):
+            # Pass-through filter, just apply gain
+            return audio_samples * (10 ** (self.gain / 20))
+            
+        filtered_samples = scipy.signal.lfilter(self.b, self.a, audio_samples)
+        # Apply gain to the filtered band
+        processed_samples = filtered_samples * (10 ** (self.gain / 20))
+        return processed_samples
 
 # === CLI ===
 def print_usage():
@@ -636,6 +789,20 @@ Commands:
   master             Master an audio file (advanced chain, LUFS, dither, format, AI option)
   stem-split         Split audio into stems using Demucs (2, 4, or 6 stems)
 """)
+
+def check_command_exists(command):
+    """Checks if a command exists on the system path."""
+    try:
+        subprocess.run([command, "--version"], capture_output=True, check=False, text=True) # Most CLI tools support --version
+        return True
+    except FileNotFoundError:
+        try: # Fallback for commands that might not have --version or for minimal checks
+            subprocess.run([command], capture_output=True, check=False, text=True, timeout=1)
+            return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+    except Exception: # Catch any other exception during the check
+        return False
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -713,7 +880,7 @@ if __name__ == "__main__":
                 dither = False
             if arg == "--ai-mastering":
                 ai_mastering = True
-        master_audio(input_file, output_file, target_lufs=target_lufs, output_format=output_format, dither=dither, ai_mastering=ai_mastering)
+        master_audio(input_file, output_file, ai_mastering=ai_mastering, target_lufs=target_lufs, output_format=output_format)
     elif cmd == "stem-split":
         if len(sys.argv) < 4:
             print("Usage: python AUDIOTOOLS.py stem-split <input.wav> <output_dir> [--stems=2|4|6]")
@@ -724,7 +891,7 @@ if __name__ == "__main__":
         for arg in sys.argv[4:]:
             if arg.startswith("--stems="):
                 stems = int(arg.split("=")[1])
-        stem_split(input_file, output_dir, stems=stems)
+        stem_split(input_file, output_dir, num_stems=stems)
     else:
         print_usage()
         sys.exit(1)
