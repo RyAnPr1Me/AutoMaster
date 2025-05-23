@@ -145,6 +145,24 @@ def add_inaudible_signature(mid, signature='TS'):
         track.append(Message('note_off', note=note, velocity=0, time=duration, channel=channel))
         current_tick = spacing
 
+for i, track in enumerate(tracks):
+    # Set program/instrument for each channel
+    if i == 9:
+        # Channel 10: Drums (program ignored)
+        pass
+    elif i in [3, 4]:
+        track.append(Message('program_change', program=38, time=0, channel=i))  # Synth Bass 1
+    elif i in [1, 2, 5, 6]:
+        track.append(Message('program_change', program=81, time=0, channel=i))  # Lead 1 (square)
+    elif i in [7, 8]:
+        track.append(Message('program_change', program=89, time=0, channel=i))  # Pad 2 (warm)
+    elif i in [11, 12]:
+        track.append(Message('program_change', program=95, time=0, channel=i))  # FX 1 (rain)
+    elif i in [13, 14, 15]:
+        track.append(Message('program_change', program=54, time=0, channel=i))  # Voice Oohs
+    else:
+        track.append(Message('program_change', program=0, time=0, channel=i))  # Default to Acoustic Grand Piano
+
 for bar in range(NUM_BARS):
     bar_start = bar * BAR_LENGTH
     generate_drum_pattern(bar_start)
