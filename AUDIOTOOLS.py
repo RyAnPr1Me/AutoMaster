@@ -14,6 +14,7 @@ from pydub import AudioSegment, effects
 from mido import MidiFile, Message, MidiTrack, MetaMessage
 import random
 import scipy.signal
+import mido  # <-- Add this import for bpm2tempo
 
 # NOTE: Requires pydub, torchaudio, librosa, soundfile, mido, scipy, numpy
 # Install with: pip install pydub torchaudio librosa soundfile mido scipy numpy
@@ -106,6 +107,29 @@ def remove_background_noise(audio, sr, strength=0.5):
     cleaned_audio = librosa.istft(cleaned_stft)
     return cleaned_audio
 
+def remove_vocal_noise_deepfilternet(input_path, output_path):
+    """
+    Denoise vocals using DeepFilterNet (deepfilternet Python package).
+    """
+    try:
+        import deepfilternet as dfn
+    except ImportError:
+        print("[ERROR] The 'deepfilternet' package is required for DeepFilterNet denoising. Install it with: pip install deepfilternet")
+        return
+    try:
+        audio, sr = sf.read(input_path)
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=1)  # Convert to mono
+        # DeepFilterNet expects float32
+        audio = audio.astype(np.float32)
+        # Run DeepFilterNet
+        model = dfn.DeepFilterNet()
+        denoised = model.process(audio, sr)
+        sf.write(output_path, denoised, sr)
+        print(f"[DeepFilterNet] Processed and saved: {output_path}")
+    except Exception as e:
+        print(f"[ERROR] DeepFilterNet denoising failed: {e}")
+
 def trim_silence(audio, sr, top_db=30):
     """
     Trim leading and trailing silence from audio.
@@ -113,7 +137,10 @@ def trim_silence(audio, sr, top_db=30):
     trimmed, _ = librosa.effects.trim(audio, top_db=top_db)
     return trimmed
 
-def process_vocal(input_path, output_path, noise_strength=0.5, silence_db=30):
+def process_vocal(input_path, output_path, noise_strength=0.5, silence_db=30, use_deepfilternet=False):
+    if use_deepfilternet:
+        remove_vocal_noise_deepfilternet(input_path, output_path)
+        return
     try:
         audio, sr = librosa.load(input_path, sr=None)
         print(f"Loaded {input_path} (sr={sr}, duration={len(audio)/sr:.2f}s)")
@@ -186,6 +213,7 @@ def midi_to_wav(midi_file, wav_file, sf2_file):
 BPM = 140
 PPQ = 480
 NUM_BARS = 8
+BAR_LENGTH = PPQ * 4  # 4/4 time signature, 1 bar = 4 quarter notes
 FILENAME = 'max_channels_trap_gold_watermarked.mid'
 MINOR_NATURAL = [48, 50, 51, 53, 55, 56, 58]
 KICK = 36
@@ -201,6 +229,9 @@ TOM_HIGH = 50
 BASE_808 = 36
 
 def add_note(track, note, velocity, start_tick, duration, channel):
+    # Clamp note and velocity to valid MIDI range
+    note = max(0, min(127, note))
+    velocity = max(0, min(127, velocity))
     if len(track) == 0:
         delta = start_tick
     else:
@@ -485,22 +516,96 @@ def generate_full_trap_beat(
 # === STEM SPLIT ===
 def stem_split(input_file, output_dir, stems=2):
     """
-    Split audio into stems using Spleeter.
-    stems: 2 (vocals/accompaniment), 4 (vocals, drums, bass, other), or 5 (vocals, drums, bass, piano, other)
+    Split audio into stems using Demucs.
+    stems: 2 (vocals/accompaniment), 4 (vocals, drums, bass, other), or 6 (htdemucs: vocals, drums, bass, guitar, piano, other)
     """
     try:
-        from spleeter.separator import Separator
-    except ImportError:
-        print("[ERROR] The 'spleeter' package is required for stem splitting. Install it with: pip install spleeter")
-        sys.exit(1)
-    if stems not in [2, 4, 5]:
-        print("[ERROR] Stems must be 2, 4, or 5.")
-        sys.exit(1)
-    model = f'spleeter:{stems}stems'
-    separator = Separator(model)
-    print(f"Splitting '{input_file}' into {stems} stems...")
-    separator.separate_to_file(input_file, output_dir)
-    print(f"Stems saved to '{output_dir}'")
+        # Check if demucs is installed
+        import shutil
+        if not shutil.which("demucs"):
+            print("[ERROR] The 'demucs' command-line tool is required for stem splitting. Install it with: pip install demucs")
+            return
+    except Exception as e:
+        print(f"[ERROR] Could not check for demucs: {e}")
+        return
+    # Select Demucs model based on stems
+    if stems == 2:
+        model = "htdemucs"  # htdemucs supports 2-stem with --two-stems
+        stem_arg = f"--two-stems=vocals"
+    elif stems == 4:
+        model = "htdemucs"
+        stem_arg = ""
+    elif stems == 6:
+        model = "htdemucs_6s"
+        stem_arg = ""
+    else:
+        print("[ERROR] Stems must be 2, 4, or 6 for Demucs.")
+        return
+    try:
+        cmd = [
+            "demucs",
+            "--model", model,
+            input_file,
+            "-o", output_dir
+        ]
+        if stem_arg:
+            cmd.insert(2, stem_arg)
+        print(f"Running: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"[Demucs] Stems saved to '{output_dir}'")
+    except Exception as e:
+        print(f"[ERROR] Demucs stem splitting failed: {e}")
+
+# === MASTERING (CLASSIC & AI) ===
+def ai_master_audio(input_file, output_file, target_lufs=-14.0, output_format="wav", dither=True):
+    """
+    Placeholder for AI mastering. Replace with real API/model as needed.
+    Attempts to master audio using an AI model or cloud service.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        # Example: call a local AI model or cloud API here
+        # For now, just print and return False to fallback to classic
+        print("[INFO] AI mastering is not implemented. Falling back to classic mastering.")
+        return False
+    except Exception as e:
+        print(f"[ERROR] AI mastering failed: {e}")
+        return False
+
+def master_audio(input_file, output_file, target_lufs=-14.0, output_format="wav", dither=True, ai_mastering=False):
+    """
+    Master an audio file with advanced chain, LUFS normalization, dithering, and optional AI mastering.
+    """
+    try:
+        if ai_mastering:
+            print("[INFO] Attempting AI mastering...")
+            ai_success = ai_master_audio(input_file, output_file, target_lufs=target_lufs, output_format=output_format, dither=dither)
+            if ai_success:
+                print(f"[INFO] AI mastering complete: {output_file}")
+                return
+            else:
+                print("[WARN] AI mastering failed or not available. Using classic mastering chain.")
+        # Classic mastering chain
+        audio = AudioSegment.from_file(input_file)
+        print(f"Loaded {input_file} (channels={audio.channels}, duration={audio.duration_seconds:.2f}s)")
+        before_rms = audio.rms
+        print(f"Input RMS: {before_rms}")
+        mastered = apply_mastering_chain(audio)
+        mastered = normalize_lufs(mastered, target=target_lufs)
+        if dither:
+            # Simple dithering: add low-level noise
+            samples = np.array(mastered.get_array_of_samples()).astype(np.float32)
+            noise = np.random.uniform(-1, 1, size=samples.shape) * 0.5
+            samples = samples + noise
+            samples = np.clip(samples, -32768, 32767).astype(np.int16)
+            mastered = mastered._spawn(samples.tobytes())
+        mastered = mastered.set_frame_rate(audio.frame_rate).set_channels(audio.channels)
+        mastered.export(output_file, format=output_format)
+        after_rms = mastered.rms
+        print(f"Exported mastered file: {output_file}")
+        print(f"Output RMS: {after_rms}")
+    except Exception as e:
+        print(f"[ERROR] Mastering failed: {e}")
 
 # === CLI ===
 def print_usage():
@@ -509,27 +614,27 @@ AUDIOTOOLS.py - Unified Audio/Music Processing Toolkit
 
 Usage:
   python AUDIOTOOLS.py watermark-detect <input.mid>
-  python AUDIOTOOLS.py remove-vocal-noise <input.wav> <output.wav> [--noise-strength=0.5] [--silence-db=30]
+  python AUDIOTOOLS.py remove-vocal-noise <input.wav> <output.wav> [--noise-strength=0.5] [--silence-db=30] [--deepfilternet]
   python AUDIOTOOLS.py slice <input.wav> <segment_length_sec> <output_prefix>
   python AUDIOTOOLS.py normalize <folder>
   python AUDIOTOOLS.py bpm <input.wav>
   python AUDIOTOOLS.py key <input.wav>
   python AUDIOTOOLS.py midi2wav <input.mid> <output.wav> <soundfont.sf2>
   python AUDIOTOOLS.py trapbeat [output.mid]
-  python AUDIOTOOLS.py master <input.wav> <output.wav>
-  python AUDIOTOOLS.py stem-split <input.wav> <output_dir> [--stems=2|4|5]
+  python AUDIOTOOLS.py master <input.wav> <output.wav> [--lufs=-14.0] [--format=wav] [--no-dither] [--ai-mastering]
+  python AUDIOTOOLS.py stem-split <input.wav> <output_dir> [--stems=2|4|6]
 
 Commands:
   watermark-detect   Detect watermark in MIDI file
-  remove-vocal-noise Remove background noise and trim silence from vocal WAV
+  remove-vocal-noise Remove background noise and trim silence from vocal WAV (add --deepfilternet for DeepFilterNet)
   slice              Slice audio into segments
   normalize          Batch normalize all audio files in a folder
   bpm                Detect BPM of audio file
   key                Detect musical key of audio file
   midi2wav           Convert MIDI to WAV using a SoundFont
   trapbeat           Generate trap beat MIDI with watermark
-  master             Master an audio file
-  stem-split         Split audio into stems using Spleeter (2, 4, or 5 stems)
+  master             Master an audio file (advanced chain, LUFS, dither, format, AI option)
+  stem-split         Split audio into stems using Demucs (2, 4, or 6 stems)
 """)
 
 if __name__ == "__main__":
@@ -546,18 +651,21 @@ if __name__ == "__main__":
         detect_watermark_patterns(midi_file, patterns=patterns, velocity_threshold=5, tolerance=1, min_matches=4)
     elif cmd == "remove-vocal-noise":
         if len(sys.argv) < 4:
-            print("Usage: python AUDIOTOOLS.py remove-vocal-noise <input.wav> <output.wav> [--noise-strength=0.5] [--silence-db=30]")
+            print("Usage: python AUDIOTOOLS.py remove-vocal-noise <input.wav> <output.wav> [--noise-strength=0.5] [--silence-db=30] [--deepfilternet]")
             sys.exit(1)
         input_wav = sys.argv[2]
         output_wav = sys.argv[3]
         noise_strength = 0.5
         silence_db = 30
+        use_deepfilternet = False
         for i, arg in enumerate(sys.argv):
             if arg.startswith("--noise-strength="):
                 noise_strength = float(arg.split("=")[1])
             if arg.startswith("--silence-db="):
                 silence_db = float(arg.split("=")[1])
-        process_vocal(input_wav, output_wav, noise_strength=noise_strength, silence_db=silence_db)
+            if arg == "--deepfilternet":
+                use_deepfilternet = True
+        process_vocal(input_wav, output_wav, noise_strength=noise_strength, silence_db=silence_db, use_deepfilternet=use_deepfilternet)
     elif cmd == "slice":
         if len(sys.argv) < 5:
             print("Usage: python AUDIOTOOLS.py slice <input.wav> <segment_length_sec> <output_prefix>")
@@ -588,12 +696,27 @@ if __name__ == "__main__":
         generate_full_trap_beat(filename=outname)
     elif cmd == "master":
         if len(sys.argv) < 4:
-            print("Usage: python AUDIOTOOLS.py master <input.wav> <output.wav>")
+            print("Usage: python AUDIOTOOLS.py master <input.wav> <output.wav> [--lufs=-14.0] [--format=wav] [--no-dither] [--ai-mastering]")
             sys.exit(1)
-        master_audio(sys.argv[2], sys.argv[3])
+        input_file = sys.argv[2]
+        output_file = sys.argv[3]
+        target_lufs = -14.0
+        output_format = "wav"
+        dither = True
+        ai_mastering = False
+        for arg in sys.argv[4:]:
+            if arg.startswith("--lufs="):
+                target_lufs = float(arg.split("=")[1])
+            if arg.startswith("--format="):
+                output_format = arg.split("=")[1]
+            if arg == "--no-dither":
+                dither = False
+            if arg == "--ai-mastering":
+                ai_mastering = True
+        master_audio(input_file, output_file, target_lufs=target_lufs, output_format=output_format, dither=dither, ai_mastering=ai_mastering)
     elif cmd == "stem-split":
         if len(sys.argv) < 4:
-            print("Usage: python AUDIOTOOLS.py stem-split <input.wav> <output_dir> [--stems=2|4|5]")
+            print("Usage: python AUDIOTOOLS.py stem-split <input.wav> <output_dir> [--stems=2|4|6]")
             sys.exit(1)
         input_file = sys.argv[2]
         output_dir = sys.argv[3]
