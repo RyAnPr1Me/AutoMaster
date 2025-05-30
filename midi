@@ -1,53 +1,64 @@
-import pretty_midi
+from mido import Message, MidiFile, MidiTrack, MetaMessage, bpm2tempo
 
 # Constants
 BPM = 66
-BEATS_PER_BAR = 4
-SECONDS_PER_BEAT = 60 / BPM
-SECONDS_PER_16TH = SECONDS_PER_BEAT / 4
-KICK_NOTE = 36  # C1
-KICK_VELOCITY_ACCENT = 120
-KICK_VELOCITY_A = [115, 105, 95, 110, 100]  # Pattern A
-KICK_VELOCITY_B = [115, 105, 110, 100, 90]  # Pattern B
-KICK_POSITIONS_A = [0, 0.5, 1.25, 2, 2.5]  # in 16ths
+TICKS_PER_BEAT = 480
+TEMPO = bpm2tempo(BPM)
+
+NOTE = 36  # C1 Kick
+CHANNEL = 9  # Channel 10 in MIDI (starts from 0)
+
+# Pattern A (cleaned, no janky middle kick)
+KICK_VELOCITY_A = [115, 105, 110, 100]
+KICK_POSITIONS_A = [0, 0.5, 2, 2.5]  # Quarter note = 1.0, 16th note = 0.25
+
+# Pattern B (unchanged)
+KICK_VELOCITY_B = [115, 105, 110, 100, 90]
 KICK_POSITIONS_B = [0, 0.5, 2, 2.5, 3.75]
 
-def create_kick_note(start_time, velocity):
-    return pretty_midi.Note(
-        velocity=velocity,
-        pitch=KICK_NOTE,
-        start=start_time,
-        end=start_time + SECONDS_PER_16TH
-    )
+# Bar layout
+start_bar = 5
+bars_intro = [5]
+bars_silence = [6, 7, 8]
+bars_main_1 = list(range(9, 22))  # 9–21
+bars_breakdown = list(range(22, 31))
+bars_main_2 = list(range(31, 43))  # 31–42
 
-# Create the MIDI object
-pm = pretty_midi.PrettyMIDI(initial_tempo=BPM)
-drum = pretty_midi.Instrument(program=0, is_drum=True, name="Kick")
+# Create MIDI
+mid = MidiFile(ticks_per_beat=TICKS_PER_BEAT)
+track = MidiTrack()
+mid.tracks.append(track)
 
-# 1) Tag hit at Bar 5.3.1 (for "Sway made this beat" accent)
-bar_5_start = (5 - 1) * BEATS_PER_BAR * SECONDS_PER_BEAT
-tag_kick_time = bar_5_start + (2 * SECONDS_PER_BEAT)
-drum.notes.append(create_kick_note(tag_kick_time, KICK_VELOCITY_ACCENT))
+# Set tempo
+track.append(Message('program_change', program=0, time=0))
+track.append(MetaMessage('set_tempo', tempo=TEMPO))
 
-# 2) Bars 9-21: Alternating Pattern A / Pattern B
-for bar in range(9, 22):
-    bar_start = (bar - 1) * BEATS_PER_BAR * SECONDS_PER_BEAT
-    pattern = (KICK_POSITIONS_A, KICK_VELOCITY_A) if bar % 2 == 1 else (KICK_POSITIONS_B, KICK_VELOCITY_B)
-    for pos, vel in zip(*pattern):
-        t = bar_start + pos * SECONDS_PER_16TH
-        drum.notes.append(create_kick_note(t, vel))
+def add_kick(bar, positions, velocities):
+    for pos, vel in zip(positions, velocities):
+        total_beats = (bar - 1) * 4 + pos
+        tick = int(total_beats * TICKS_PER_BEAT)
+        track.append(Message('note_on', note=NOTE, velocity=vel, time=tick - track[-1].time if track else tick, channel=CHANNEL))
+        track.append(Message('note_off', note=NOTE, velocity=0, time=60, channel=CHANNEL))  # 1/16 note duration
 
-# 3) Bars 22-30: Silent (breakdown)
+# Add tag accent (on bar 5.3.1)
+add_kick(5, [2], [120])  # Beat 3
 
-# 4) Bars 31-42: Repeat same A/B pattern
-for bar in range(31, 43):
-    bar_start = (bar - 1) * BEATS_PER_BAR * SECONDS_PER_BEAT
-    pattern = (KICK_POSITIONS_A, KICK_VELOCITY_A) if bar % 2 == 1 else (KICK_POSITIONS_B, KICK_VELOCITY_B)
-    for pos, vel in zip(*pattern):
-        t = bar_start + pos * SECONDS_PER_16TH
-        drum.notes.append(create_kick_note(t, vel))
+# Add main pattern 1
+for i, bar in enumerate(bars_main_1):
+    if i % 2 == 0:
+        add_kick(bar, KICK_POSITIONS_A, KICK_VELOCITY_A)
+    else:
+        add_kick(bar, KICK_POSITIONS_B, KICK_VELOCITY_B)
 
-# Add to MIDI and export
-pm.instruments.append(drum)
-pm.write("kick_pattern_66bpm.mid")
-print("Kick MIDI saved as 'kick_pattern_66bpm.mid'")
+# No kick in breakdown
+
+# Add main pattern 2
+for i, bar in enumerate(bars_main_2):
+    if i % 2 == 0:
+        add_kick(bar, KICK_POSITIONS_A, KICK_VELOCITY_A)
+    else:
+        add_kick(bar, KICK_POSITIONS_B, KICK_VELOCITY_B)
+
+# Save the MIDI
+mid.save('fixed_kick_pattern.mid')
+print("MIDI file saved as 'fixed_kick_pattern.mid'")
