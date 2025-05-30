@@ -1,64 +1,53 @@
 import pretty_midi
 
 # Constants
-BPM = 140
+BPM = 66
 BEATS_PER_BAR = 4
 SECONDS_PER_BEAT = 60 / BPM
 SECONDS_PER_16TH = SECONDS_PER_BEAT / 4
 KICK_NOTE = 36  # C1
 KICK_VELOCITY_ACCENT = 120
-KICK_VELOCITY_A = [115, 105, 95, 110, 100]  # Pattern A velocities
-KICK_VELOCITY_B = [115, 105, 110, 100, 90]  # Pattern B velocities
-KICK_POSITIONS_A = [0, 0.5, 1.25, 2, 2.5]  # In 16th notes within bar (0-based)
+KICK_VELOCITY_A = [115, 105, 95, 110, 100]  # Pattern A
+KICK_VELOCITY_B = [115, 105, 110, 100, 90]  # Pattern B
+KICK_POSITIONS_A = [0, 0.5, 1.25, 2, 2.5]  # in 16ths
 KICK_POSITIONS_B = [0, 0.5, 2, 2.5, 3.75]
 
 def create_kick_note(start_time, velocity):
-    note = pretty_midi.Note(
+    return pretty_midi.Note(
         velocity=velocity,
         pitch=KICK_NOTE,
         start=start_time,
         end=start_time + SECONDS_PER_16TH
     )
-    return note
 
-# Initialize PrettyMIDI object and drum instrument
+# Create the MIDI object
 pm = pretty_midi.PrettyMIDI(initial_tempo=BPM)
 drum = pretty_midi.Instrument(program=0, is_drum=True, name="Kick")
 
-# 1) Producer tag kick at Bar 5.3.1 (Bar 5, Beat 3, 1st 16th)
+# 1) Tag hit at Bar 5.3.1 (for "Sway made this beat" accent)
 bar_5_start = (5 - 1) * BEATS_PER_BAR * SECONDS_PER_BEAT
-# 3.1 means beat 3 (0-based index 2) plus first 16th (0), so:
-kick_time_tag = bar_5_start + (2 * SECONDS_PER_BEAT)
-drum.notes.append(create_kick_note(kick_time_tag, KICK_VELOCITY_ACCENT))
+tag_kick_time = bar_5_start + (2 * SECONDS_PER_BEAT)
+drum.notes.append(create_kick_note(tag_kick_time, KICK_VELOCITY_ACCENT))
 
-# 2) Bars 9-21 alternating pattern A/B (13 bars)
-for bar_num in range(9, 22):
-    bar_start = (bar_num - 1) * BEATS_PER_BAR * SECONDS_PER_BEAT
-    if bar_num % 2 == 1:  # Odd bars -> Pattern A
-        for pos_16th, vel in zip(KICK_POSITIONS_A, KICK_VELOCITY_A):
-            note_time = bar_start + pos_16th * SECONDS_PER_16TH
-            drum.notes.append(create_kick_note(note_time, vel))
-    else:  # Even bars -> Pattern B
-        for pos_16th, vel in zip(KICK_POSITIONS_B, KICK_VELOCITY_B):
-            note_time = bar_start + pos_16th * SECONDS_PER_16TH
-            drum.notes.append(create_kick_note(note_time, vel))
+# 2) Bars 9-21: Alternating Pattern A / Pattern B
+for bar in range(9, 22):
+    bar_start = (bar - 1) * BEATS_PER_BAR * SECONDS_PER_BEAT
+    pattern = (KICK_POSITIONS_A, KICK_VELOCITY_A) if bar % 2 == 1 else (KICK_POSITIONS_B, KICK_VELOCITY_B)
+    for pos, vel in zip(*pattern):
+        t = bar_start + pos * SECONDS_PER_16TH
+        drum.notes.append(create_kick_note(t, vel))
 
-# 3) Bars 22-30 silent (breakdown) - do nothing
+# 3) Bars 22-30: Silent (breakdown)
 
-# 4) Bars 31-42 repeating same alternating patterns (12 bars)
-for bar_num in range(31, 43):
-    bar_start = (bar_num - 1) * BEATS_PER_BAR * SECONDS_PER_BEAT
-    if bar_num % 2 == 1:  # Odd bars -> Pattern A
-        for pos_16th, vel in zip(KICK_POSITIONS_A, KICK_VELOCITY_A):
-            note_time = bar_start + pos_16th * SECONDS_PER_16TH
-            drum.notes.append(create_kick_note(note_time, vel))
-    else:  # Even bars -> Pattern B
-        for pos_16th, vel in zip(KICK_POSITIONS_B, KICK_VELOCITY_B):
-            note_time = bar_start + pos_16th * SECONDS_PER_16TH
-            drum.notes.append(create_kick_note(note_time, vel))
+# 4) Bars 31-42: Repeat same A/B pattern
+for bar in range(31, 43):
+    bar_start = (bar - 1) * BEATS_PER_BAR * SECONDS_PER_BEAT
+    pattern = (KICK_POSITIONS_A, KICK_VELOCITY_A) if bar % 2 == 1 else (KICK_POSITIONS_B, KICK_VELOCITY_B)
+    for pos, vel in zip(*pattern):
+        t = bar_start + pos * SECONDS_PER_16TH
+        drum.notes.append(create_kick_note(t, vel))
 
-# Add drum track to PrettyMIDI and write out
+# Add to MIDI and export
 pm.instruments.append(drum)
-pm.write('kick_pattern.mid')
-print("Kick pattern MIDI saved as 'kick_pattern.mid'")
- 
+pm.write("kick_pattern_66bpm.mid")
+print("Kick MIDI saved as 'kick_pattern_66bpm.mid'")
