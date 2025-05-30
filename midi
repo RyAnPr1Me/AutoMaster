@@ -41,12 +41,35 @@ track.append(Message('program_change', program=0, time=0))
 track.append(MetaMessage('set_tempo', tempo=tempo))
 
 # Generate kicks over 16 bars
+all_events = []
+
+# Collect all events with absolute timing first
 for bar in range(track_length_bars // 2):  # 2-bar pattern repeat
     offset = bar * 8  # Each 2-bar loop is 8 beats
     for beat, velocity in full_pattern:
-        time = beats_to_ticks(offset + beat)
-        track.append(Message('note_on', note=kick_note, velocity=velocity, time=time))
-        track.append(Message('note_off', note=kick_note, velocity=0, time=time + beats_to_ticks(0.1)))
+        abs_time = beats_to_ticks(offset + beat)
+        note_duration = beats_to_ticks(0.25)  # Quarter note duration
+        
+        all_events.append((abs_time, 'note_on', kick_note, velocity))
+        all_events.append((abs_time + note_duration, 'note_off', kick_note, 0))
+
+# Sort events by absolute time
+all_events.sort()
+
+# Add events to track with proper delta timing
+current_time = 0
+for abs_time, msg_type, note, velocity in all_events:
+    delta_time = abs_time - current_time
+    
+    if msg_type == 'note_on':
+        track.append(Message('note_on', note=note, velocity=velocity, time=delta_time))
+    else:
+        track.append(Message('note_off', note=note, velocity=velocity, time=delta_time))
+    
+    current_time = abs_time
+
+# Add end of track
+track.append(MetaMessage('end_of_track', time=0))
 
 # Save to file
 mid.save('swerve_kick.mid')
