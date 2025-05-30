@@ -1,83 +1,55 @@
 from mido import Message, MidiFile, MidiTrack, MetaMessage, bpm2tempo
 
-# Constants
-BPM = 66
-TICKS_PER_BEAT = 480
-TEMPO = bpm2tempo(BPM)
+# CONFIG
+tempo_bpm = 140
+ticks_per_beat = 480
+kick_note = 36  # GM Kick
+track_length_bars = 16  # 16 bars = 32 beats = ~14 seconds @ 140 BPM
 
-NOTE = 36  # C1 Kick
-CHANNEL = 9  # Channel 10 in MIDI (starts from 0)
+# Convert time in beats to MIDI ticks
+def beats_to_ticks(beats):
+    return int(beats * ticks_per_beat)
 
-# Pattern A (cleaned, no janky middle kick)
-KICK_VELOCITY_A = [115, 105, 110, 100]
-KICK_POSITIONS_A = [0, 0.5, 2, 2.5]  # Quarter note = 1.0, 16th note = 0.25
+# Define your kick pattern (in beats within a 2-bar phrase)
+# Each entry is: (beat position, velocity)
+kick_pattern = [
+    (0.0, 100),     # Bar 1 beat 1
+    (0.75, 40),     # Bar 1 beat 1a (16th ghost)
+    (1.5, 60),      # Bar 1 beat 2&
+    (3.75, 40),     # Bar 1 beat 4a (ghost)
+    
+    (4.0, 100),     # Bar 2 beat 1
+    (5.75, 40),     # Bar 2 beat 2a (ghost)
+    (6.25, 60),     # Bar 2 beat 3e
+    (7.75, 100),    # Bar 2 beat 4a
+]
 
-# Pattern B (unchanged)
-KICK_VELOCITY_B = [115, 105, 110, 100, 90]
-KICK_POSITIONS_B = [0, 0.5, 2, 2.5, 3.75]
+# Add one kick hit during the producer tag at ~0:08 = ~4 beats
+producer_tag_hit = (2.0, 30)  # Quiet ghost kick at tag tail
 
-# Bar layout
-start_bar = 5
-bars_intro = [5]
-bars_silence = [6, 7, 8]
-bars_main_1 = list(range(9, 22))  # 9–21
-bars_breakdown = list(range(22, 31))
-bars_main_2 = list(range(31, 43))  # 31–42
+# Full pattern with mid-tag hit inserted
+full_pattern = kick_pattern + [producer_tag_hit]
 
-# Create MIDI
-mid = MidiFile(ticks_per_beat=TICKS_PER_BEAT)
+# Create MIDI file and track
+mid = MidiFile(ticks_per_beat=ticks_per_beat)
 track = MidiTrack()
 mid.tracks.append(track)
 
 # Set tempo
+tempo = bpm2tempo(tempo_bpm)
 track.append(Message('program_change', program=0, time=0))
-track.append(MetaMessage('set_tempo', tempo=TEMPO))
+track.append(MetaMessage('set_tempo', tempo=tempo))
 
-# Track absolute time for proper delta calculation
-current_time = 0
+# Generate kicks over 16 bars
+for bar in range(track_length_bars // 2):  # 2-bar pattern repeat
+    offset = bar * 8  # Each 2-bar loop is 8 beats
+    for beat, velocity in full_pattern:
+        time = beats_to_ticks(offset + beat)
+        track.append(Message('note_on', note=kick_note, velocity=velocity, time=time))
+        track.append(Message('note_off', note=kick_note, velocity=0, time=time + beats_to_ticks(0.1)))
 
-def add_kick(bar, positions, velocities):
-    global current_time
-    events = []
-    
-    # Create all events with absolute times first
-    for pos, vel in zip(positions, velocities):
-        total_beats = (bar - 1) * 4 + pos
-        note_on_time = int(total_beats * TICKS_PER_BEAT)
-        note_off_time = note_on_time + 60  # 1/16 note duration
-        
-        events.append((note_on_time, Message('note_on', note=NOTE, velocity=vel, time=0, channel=CHANNEL)))
-        events.append((note_off_time, Message('note_off', note=NOTE, velocity=0, time=0, channel=CHANNEL)))
-    
-    # Sort events by time
-    events.sort(key=lambda x: x[0])
-    
-    # Add events with proper delta times
-    for abs_time, msg in events:
-        delta_time = abs_time - current_time
-        msg.time = delta_time
-        track.append(msg)
-        current_time = abs_time
-
-# Add tag accent (on bar 5.3.1)
-add_kick(5, [2], [120])  # Beat 3
-
-# Add main pattern 1
-for i, bar in enumerate(bars_main_1):
-    if i % 2 == 0:
-        add_kick(bar, KICK_POSITIONS_A, KICK_VELOCITY_A)
-    else:
-        add_kick(bar, KICK_POSITIONS_B, KICK_VELOCITY_B)
-
-# No kick in breakdown
-
-# Add main pattern 2
-for i, bar in enumerate(bars_main_2):
-    if i % 2 == 0:
-        add_kick(bar, KICK_POSITIONS_A, KICK_VELOCITY_A)
-    else:
-        add_kick(bar, KICK_POSITIONS_B, KICK_VELOCITY_B)
-
-# Save the MIDI
-mid.save('fixed_kick_pattern.mid')
-print("MIDI file saved as 'fixed_kick_pattern.mid'")
+# Save to file
+mid.save('swerve_kick.mid')
+print("🔥 Kick MIDI saved as 'swerve_kick.mid'")
+# To convert this MIDI to WAV, use the provided midi_to_wav.py script with a soundfont.
+# Example usage:        
