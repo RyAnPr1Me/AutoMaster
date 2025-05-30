@@ -4,7 +4,7 @@ from mido import Message, MidiFile, MidiTrack, MetaMessage, bpm2tempo
 tempo_bpm = 140
 ticks_per_beat = 480
 kick_note = 36  # GM Kick
-track_length_bars = 16  # 16 bars = 32 beats = ~14 seconds @ 140 BPM
+track_length_bars = 16  # 16 bars
 
 # Convert time in beats to MIDI ticks
 def beats_to_ticks(beats):
@@ -35,44 +35,44 @@ mid = MidiFile(ticks_per_beat=ticks_per_beat)
 track = MidiTrack()
 mid.tracks.append(track)
 
-# Set tempo
-tempo = bpm2tempo(tempo_bpm)
-track.append(Message('program_change', program=0, time=0))
-track.append(MetaMessage('set_tempo', tempo=tempo))
+# Set tempo at the beginning with time=0
+track.append(MetaMessage('set_tempo', tempo=bpm2tempo(tempo_bpm), time=0))
+track.append(Message('program_change', program=0, time=0, channel=9))  # Drum channel
 
-# Generate kicks over 16 bars
-all_events = []
+# Create a simple approach: collect all events and sort them
+events = []
 
-# Collect all events with absolute timing first
-for bar in range(track_length_bars // 2):  # 2-bar pattern repeat
-    offset = bar * 8  # Each 2-bar loop is 8 beats
-    for beat, velocity in full_pattern:
-        abs_time = beats_to_ticks(offset + beat)
-        note_duration = beats_to_ticks(0.25)  # Quarter note duration
+# Generate kicks over 16 bars (8 repeats of 2-bar pattern)
+for repeat in range(track_length_bars // 2):
+    bar_offset = repeat * 8  # 8 beats per 2-bar pattern
+    
+    for beat_pos, velocity in full_pattern:
+        absolute_beat = bar_offset + beat_pos
+        tick_start = beats_to_ticks(absolute_beat)
+        tick_end = tick_start + beats_to_ticks(0.25)  # 1/4 note duration
         
-        all_events.append((abs_time, 'note_on', kick_note, velocity))
-        all_events.append((abs_time + note_duration, 'note_off', kick_note, 0))
+        events.append((tick_start, Message('note_on', channel=9, note=kick_note, velocity=velocity, time=0)))
+        events.append((tick_end, Message('note_off', channel=9, note=kick_note, velocity=0, time=0)))
 
-# Sort events by absolute time
-all_events.sort()
+# Sort by time
+events.sort(key=lambda x: x[0])
 
-# Add events to track with proper delta timing
-current_time = 0
-for abs_time, msg_type, note, velocity in all_events:
-    delta_time = abs_time - current_time
-    
-    if msg_type == 'note_on':
-        track.append(Message('note_on', note=note, velocity=velocity, time=delta_time))
-    else:
-        track.append(Message('note_off', note=note, velocity=velocity, time=delta_time))
-    
-    current_time = abs_time
+# Convert to delta time and add to track
+last_tick = 0
+for tick, message in events:
+    delta = tick - last_tick
+    message.time = delta
+    track.append(message)
+    last_tick = tick
 
-# Add end of track
-track.append(MetaMessage('end_of_track', time=0))
+# End the track
+final_tick = beats_to_ticks(track_length_bars * 4)  # 4 beats per bar
+end_delta = final_tick - last_tick
+track.append(MetaMessage('end_of_track', time=end_delta))
 
 # Save to file
 mid.save('swerve_kick.mid')
 print("🔥 Kick MIDI saved as 'swerve_kick.mid'")
-# To convert this MIDI to WAV, use the provided midi_to_wav.py script with a soundfont.
-# Example usage:        
+print(f"Track length: {track_length_bars} bars at {tempo_bpm} BPM")
+print(f"Total events: {len([msg for msg in track if msg.type in ['note_on', 'note_off']])}")
+# To convert this MIDI to WAV, use the provided midi_to_wav.py script with a soundfont.        
