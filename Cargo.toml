@@ -1,0 +1,16 @@
+[package]
+name = "software_gpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rayon = "1.7"
+image = "0.24"
+nalgebra = "0.32"
+bytemuck = "1.13"
+log = "0.4"
+env_logger = "0.10"
+
+[[bin]]
+name = "software_gpu"
+path = "src/main.rs"
